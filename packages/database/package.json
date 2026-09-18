@@ -1,1 +1,1 @@
-{"name":"@platform/database","private":true,"version":"0.1.0","type":"module","exports":{"./*":"./src/*.ts"},"scripts":{"migrate":"tsx scripts/migrate.ts","test":"tsx tests/rls.test.ts"},"dependencies":{"pg":"^8.16.3"},"devDependencies":{"tsx":"^4.20.5","vitest":"^3.2.4"}}
+{"name":"@platform/database","private":true,"version":"0.1.0","type":"module","exports":{"./*":"./src/*.ts"},"scripts":{"migrate":"tsx scripts/migrate.ts","test":"tsx tests/rls.test.ts"},"dependencies":{"pg":"^8.16.3"},"devDependencies":{"tsx":"^4.20.5","vitest":"^4.1.11"}}
