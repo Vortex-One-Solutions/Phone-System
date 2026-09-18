@@ -1,0 +1,96 @@
+{
+  "handoff": "01",
+  "candidate": true,
+  "generated_at": "2026-09-18",
+  "findings": [
+    {
+      "gate": "PostgreSQL 17 target",
+      "status": "PASS"
+    },
+    {
+      "gate": "RLS enabled and forced",
+      "status": "PASS"
+    },
+    {
+      "gate": "Runtime role cannot bypass RLS",
+      "status": "PASS"
+    },
+    {
+      "gate": "Tenant context uses transaction-local settings",
+      "status": "PASS"
+    },
+    {
+      "gate": "Session auth is hashed",
+      "status": "PASS"
+    },
+    {
+      "gate": "API keys are hashed",
+      "status": "PASS"
+    },
+    {
+      "gate": "MFA key configured by environment",
+      "status": "PASS"
+    },
+    {
+      "gate": "AES-256-GCM MFA encryption",
+      "status": "PASS"
+    },
+    {
+      "gate": "Session list/revoke endpoints",
+      "status": "PASS"
+    },
+    {
+      "gate": "API-key scope allow-list",
+      "status": "PASS"
+    },
+    {
+      "gate": "Health endpoints",
+      "status": "PASS"
+    },
+    {
+      "gate": "Request correlation ID",
+      "status": "PASS"
+    },
+    {
+      "gate": "RLS integration suite present",
+      "status": "PASS"
+    },
+    {
+      "gate": "Security contract suite present",
+      "status": "PASS"
+    },
+    {
+      "gate": "Acceptance gate documentation",
+      "status": "PASS"
+    },
+    {
+      "gate": "Security documentation",
+      "status": "PASS"
+    },
+    {
+      "gate": "Security register",
+      "status": "PASS"
+    },
+    {
+      "gate": "Static credential-pattern scan",
+      "status": "PASS",
+      "details": []
+    },
+    {
+      "gate": "pnpm frozen-install lockfile",
+      "status": "BLOCKED",
+      "details": "pnpm-lock.yaml is required by CI but is not present."
+    },
+    {
+      "gate": "Live PostgreSQL 17 + Redis execution",
+      "status": "BLOCKED",
+      "details": "This execution environment has no connected PostgreSQL 17/Redis service."
+    },
+    {
+      "gate": "pnpm install/build/typecheck/test execution",
+      "status": "BLOCKED",
+      "details": "pnpm is not available in this execution environment; no fake pass is recorded."
+    }
+  ],
+  "release_rule": "Any BLOCKED or FAIL gate prevents 100% certification."
+}

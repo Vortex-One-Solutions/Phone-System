@@ -1,0 +1,23 @@
+{
+  "name": "platform",
+  "private": true,
+  "packageManager": "pnpm@10.17.1",
+  "engines": {"node": ">=24.21.0"},
+  "scripts": {
+    "dev": "turbo dev",
+    "build": "turbo build",
+    "lint": "turbo lint",
+    "typecheck": "turbo typecheck",
+    "test": "turbo test",
+    "test:integration": "pnpm --filter @platform/api test:integration",
+    "db:migrate": "pnpm --filter @platform/database migrate",
+    "db:test": "pnpm --filter @platform/database test",
+    "security": "pnpm audit --audit-level=high",
+    "format": "prettier --write ."
+  },
+  "devDependencies": {
+    "prettier": "^3.6.2",
+    "turbo": "^2.5.6",
+    "typescript": "^5.9.2"
+  }
+}

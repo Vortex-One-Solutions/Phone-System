@@ -1,0 +1,4 @@
+{
+  "name":"@platform/auth","private":true,"version":"0.1.0","type":"module",
+  "dependencies":{"@platform/domain":"workspace:*","argon2":"^0.44.0","otplib":"^13.2.0","zod":"^4.1.5"}
+}

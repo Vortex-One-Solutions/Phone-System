@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  foundation:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: platform_admin
+          POSTGRES_PASSWORD: platform_admin
+          POSTGRES_DB: platform
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U platform_admin -d platform"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:8-alpine
+        ports: ['6379:6379']
+    env:
+      DATABASE_URL: postgres://platform_admin:platform_admin@localhost:5432/platform
+      DATABASE_ADMIN_URL: postgres://platform_admin:platform_admin@localhost:5432/platform
+      REDIS_URL: redis://localhost:6379
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24.21.0
+          cache: pnpm
+      - run: pnpm install --no-frozen-lockfile
+      - run: pnpm db:migrate
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm test:integration
+      - run: pnpm audit --audit-level=high
+      - run: docker build -f infrastructure/deployment/api.Dockerfile .
+      - run: docker build -f infrastructure/deployment/web.Dockerfile .

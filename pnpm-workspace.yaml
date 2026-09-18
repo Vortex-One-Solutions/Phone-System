@@ -1,0 +1,8 @@
+packages:
+  - apps/*
+  - workers/*
+  - packages/*
+
+onlyBuiltDependencies:
+  - argon2
+  - esbuild

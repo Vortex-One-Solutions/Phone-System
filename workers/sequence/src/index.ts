@@ -1,0 +1,1 @@
+const shutdown = () => process.exit(0);\nprocess.on('SIGINT', shutdown);\nprocess.on('SIGTERM', shutdown);\nconsole.log('worker sequence ready');\nsetInterval(() => undefined, 60_000);\n

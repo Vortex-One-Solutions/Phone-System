@@ -1,0 +1,1 @@
+{"name":"@platform/events","private":true,"version":"0.1.0","type":"module","dependencies":{"@platform/domain":"workspace:*"}}
