@@ -84,6 +84,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@telnyx/webrtc':
+        specifier: ^2.27.10
+        version: 2.27.10
       next:
         specifier: 16.3.3
         version: 16.3.3(@types/node@24.13.5)(react-dom@19.2.0(react@19.2.0))(react@19.2.0)
@@ -192,10 +195,23 @@ importers:
         version: 5.9.3
 
   workers/dialer:
+    dependencies:
+      '@platform/domain':
+        specifier: workspace:*
+        version: link:../../packages/domain
+      '@platform/telephony':
+        specifier: workspace:*
+        version: link:../../packages/telephony
+      pg:
+        specifier: ^8.16.3
+        version: 8.23.0
     devDependencies:
       '@types/node':
         specifier: ^24.13.5
         version: 24.13.5
+      '@types/pg':
+        specifier: ^8.15.5
+        version: 8.23.1
       tsx:
         specifier: ^4.20.5
         version: 4.23.13
@@ -687,6 +703,10 @@ packages:
   '@otplib/uri@13.5.0':
     resolution: {integrity: sha512-LsL1hqTEgJHY40U2eb/Qp6OR1tKkNGwHQTrqqjIuJj0cawGWkLEmeUFK1MHzWBQ4bgy5IdeB5Et7gIDSAH/CRw==}
 
+  '@peermetrics/webrtc-stats@5.9.0':
+    resolution: {integrity: sha512-eQYGGdj+H4MUEuwbccy9bxRV3uAqPM5+Say9PSx/alrtv5ccmKCqGfLbqXrRJ/qThZvjZNBna5K/YnCWoaTQBw==}
+    engines: {node: '>=18'}
+
   '@phc/format@1.0.0':
     resolution: {integrity: sha512-m7X9U6BG2+J+R1lSOdCiITLLrxm+cWlNI3HUFA92oLO77ObGNzaKdh8pMLqdZcshtkKuV84olNNXDfMc4FezBQ==}
     engines: {node: '>=10'}
@@ -824,6 +844,10 @@ packages:
 
   '@swc/helpers@0.5.23':
     resolution: {integrity: sha512-5lSsMOTXURePglDfvuAQUqkGek9Hg2kksOYay2m0+XR++b2NWYL/4sWyuvVBIs8oKnJaxkdi9whaL/sqN13afw==}
+
+  '@telnyx/webrtc@2.27.10':
+    resolution: {integrity: sha512-Hw9m1xGkoO6muXsEwVh53seHO+hCaO+w7GLZE8zAA2ESrwRK0H1bBv60fEGBEAiRjHiVicRSDlzQkjCj3iBbHQ==}
+    engines: {node: '>=14.x'}
 
   '@turbo/darwin-64@2.10.13':
     resolution: {integrity: sha512-m5DBcpkxmcKpEJHHFUfqf9GLUjSmw3cDnBJM9nghPW3kjCNb5OyNKmzG7/yT5x5AwzOO+HMwKN+UI4iVKL87YA==}
@@ -974,29 +998,5 @@ packages:
       supports-color: '*'
     peerDependenciesMeta:
       supports-color:
-        optional: true
-
-  denque@2.1.0:
-    resolution: {integrity: sha512-HVQE3AAb/pxF8fQAoiqpvg9i3evqug3hoiwakOyZAwJm+6vZehbkYXZ0l4JxS+I3QxM97v5aaRNhj8v5oBhekw==}
-    engines: {node: '>=0.10'}
-
-  depd@2.0.0:
-    resolution: {integrity: sha512-g7nH6P6dyDioJogAAGprGpCtVImJhpPk/roCzdb3fIh61/s/nPsfR6onyMwkCAR/OlC3yBC0lESvUoQEAssIrw==}
-    engines: {node: '>= 0.8'}
-
-  dequal@2.0.3:
-    resolution: {integrity: sha512-0je+qPKHEMohvfRTCEo3CrPG6cAzAYgmzKyxRiYSSDkS6eGJdyVJm7WaYA5ECaAD9wLB2T4EEeymA5aFVcYXCA==}
-    engines: {node: '>=6'}
-
-  detect-libc@2.1.2:
-    resolution: {integrity: sha512-Btj2BOOO83o3WyH59e8MgXsxEQVcarkUOpEYrubB0urwnN10yQ364rsiByU11nZlqWYZm05i/of7io4mzihBtQ==}
-    engines: {node: '>=8'}
-
-  es-module-lexer@2.3.2:
-    resolution: {integrity: sha512-poHGpORABojJJucnV9KbOavETW8lBVnphkW77ER5/BQ5Fz7oXSoCNek7IH3vR5nRjdsEz926ibFYX8KtLQmdyw==}
-
-  esbuild@0.28.2:
-    resolution: {integrity: sha512-HKVLS8dvII+xoKW9kmqxbRKrnWEXfJJr/FZhhJmiqIB0e053QNYFqOBouTMO/k5sID4MvCiUCvv8b9M4h32wIA==}
-    engines: {node: '>=18'}
 
 [executed on device: codespaces-73d925 (e215b2d9-1319-4805-9ed4-b434928d4042)]

@@ -579,6 +579,15 @@ app.post('/api/v1/telephony/providers/:id/browser-token', { preHandler: requireP
   }
 });
 
+app.get('/api/v1/telephony/phone-numbers', { preHandler: requirePermission('telephony.read') }, async (request) => {
+  const result = await withTransaction(request.tenantId!, (tx) => tx.query(
+    `SELECT n.id,n.provider_id,n.e164,n.label,n.capabilities,n.status FROM phone_numbers n
+     JOIN telephony_providers p ON p.id=n.provider_id AND p.status='ACTIVE'
+     WHERE n.status='ACTIVE' ORDER BY n.label NULLS LAST,n.e164`,
+  ));
+  return ok(request.id, result.rows);
+});
+
 app.post('/api/v1/telephony/phone-numbers', { preHandler: requirePermission('telephony.manage') }, async (request, reply) => {
   const body = z.object({ provider_id: z.string().uuid(), e164: z.string(), label: z.string().max(150).optional(), capabilities: z.record(z.string(), z.boolean()).default({}) }).parse(request.body);
   const e164 = normalizeE164(body.e164);
@@ -606,45 +615,36 @@ app.post('/api/v1/telephony/suppressions', { preHandler: requirePermission('tele
 
 app.post('/api/v1/telephony/calls', { preHandler: requirePermission('telephony.manage') }, async (request, reply) => {
   const body = z.object({
-    provider_id: z.string().uuid(), phone_number_id: z.string().uuid(), to: z.string(), contact_id: z.string().uuid().optional(), campaign_id: z.string().uuid().optional(), assigned_user_id: z.string().uuid().optional(),
+    provider_id: z.string().uuid(), phone_number_id: z.string().uuid(), to: z.string(),
+    contact_id: z.string().uuid().optional(), campaign_id: z.string().uuid().optional(), assigned_user_id: z.string().uuid().optional(),
     idempotency_key: z.string().min(8).max(255).optional(), answering_machine_detection: z.boolean().default(false),
+    max_attempts: z.number().int().min(1).max(5).default(3),
   }).parse(request.body);
   const to = normalizeE164(body.to);
   const existing = body.idempotency_key ? await withTransaction(request.tenantId!, (tx) => tx.query<{ response_body: unknown }>(
     `SELECT response_body FROM idempotency_keys WHERE tenant_id=$1 AND idempotency_key=$2 AND expires_at>NOW()`, [request.tenantId, body.idempotency_key])) : null;
   if (existing?.rows[0]) return reply.code(200).send(existing.rows[0].response_body);
 
-  const details = await withTransaction(request.tenantId!, async (tx) => {
-    const result = await tx.query<{ provider_id:string; api_base_url:string; api_key_encrypted:string; connection_id:string; e164:string }>(
-      `SELECT p.id provider_id,p.api_base_url,p.api_key_encrypted,p.connection_id,n.e164
-       FROM telephony_providers p JOIN phone_numbers n ON n.provider_id=p.id AND n.tenant_id=p.tenant_id
-       WHERE p.id=$1 AND n.id=$2 AND p.status='ACTIVE' AND n.status='ACTIVE'`, [body.provider_id, body.phone_number_id]);
+  const queued = await withTransaction({ tenantId: request.tenantId!, userId: request.userId ?? null }, async (tx) => {
+    const result = await tx.query<{ e164:string }>(
+      `SELECT n.e164 FROM phone_numbers n JOIN telephony_providers p ON p.id=n.provider_id
+       WHERE n.id=$1 AND n.tenant_id=$2 AND n.provider_id=$3 AND n.status='ACTIVE' AND p.status='ACTIVE'`,
+      [body.phone_number_id, request.tenantId, body.provider_id]);
     const row = result.rows[0];
     if (!row) throw Object.assign(new Error('Provider or phone number not found'), { statusCode: 404 });
     const suppressed = await tx.query('SELECT 1 FROM contact_suppressions WHERE tenant_id=$1 AND phone_e164=$2 AND (expires_at IS NULL OR expires_at>NOW())', [request.tenantId, to]);
     if (suppressed.rowCount) throw Object.assign(new Error('Destination is suppressed'), { statusCode: 409 });
     const callId = uuidv7();
-    await tx.query(`INSERT INTO calls(id,tenant_id,contact_id,campaign_id,assigned_user_id,phone_number_id,direction,state,from_number,to_number)
-      VALUES($1,$2,$3,$4,$5,$6,'OUTBOUND','QUEUED',$7,$8)`, [callId,request.tenantId,body.contact_id??null,body.campaign_id??null,body.assigned_user_id??null,body.phone_number_id,row.e164,to]);
-    return { ...row, callId };
+    const response = ok(request.id, { id: callId, state: 'QUEUED', provider: 'telnyx' });
+    await tx.query(`INSERT INTO calls(id,tenant_id,contact_id,campaign_id,assigned_user_id,phone_number_id,direction,state,from_number,to_number,max_attempts,metadata)
+      VALUES($1,$2,$3,$4,$5,$6,'OUTBOUND','QUEUED',$7,$8,$9,$10)`,
+      [callId,request.tenantId,body.contact_id??null,body.campaign_id??null,body.assigned_user_id??null,body.phone_number_id,row.e164,to,body.max_attempts,JSON.stringify({ answering_machine_detection: body.answering_machine_detection })]);
+    if (body.idempotency_key) await tx.query(`INSERT INTO idempotency_keys(id,tenant_id,idempotency_key,request_hash,response_status,response_body,expires_at)
+      VALUES($1,$2,$3,$4,202,$5,NOW()+INTERVAL '24 hours') ON CONFLICT DO NOTHING`,
+      [uuidv7(),request.tenantId,body.idempotency_key,sha256(JSON.stringify(body)),JSON.stringify(response)]);
+    return response;
   });
-
-  try {
-    const telnyx = new TelnyxClient({ apiKey: decryptMfaSecret(details.api_key_encrypted, telephonyKey()), baseUrl: details.api_base_url, connectionId: details.connection_id });
-    const providerCall = await telnyx.createCall({ to, from: details.e164, connectionId: details.connection_id, webhookUrl: `${config.PUBLIC_API_ORIGIN}/api/v1/webhooks/telnyx/${request.tenantId}/${body.provider_id}`, ...(body.idempotency_key ? { commandId: body.idempotency_key } : {}), answeringMachineDetection: body.answering_machine_detection });
-    const response = ok(request.id, { id: details.callId, state: 'INITIATED', provider_call_id: providerCall.callControlId });
-    await withTransaction(request.tenantId!, async (tx) => {
-      await tx.query(`UPDATE calls SET state='INITIATED',provider_call_id=$2,started_at=COALESCE(started_at,NOW()) WHERE id=$1`, [details.callId, providerCall.callControlId]);
-      await tx.query(`INSERT INTO call_legs(id,tenant_id,call_id,provider,provider_call_id,leg_index,state,from_number,to_number,started_at)
-        VALUES($1,$2,$3,'telnyx',$4,0,'INITIATED',$5,$6,NOW())`, [uuidv7(),request.tenantId,details.callId,providerCall.callControlId,details.e164,to]);
-      if (body.idempotency_key) await tx.query(`INSERT INTO idempotency_keys(id,tenant_id,idempotency_key,request_hash,response_status,response_body,expires_at)
-        VALUES($1,$2,$3,$4,201,$5,NOW()+INTERVAL '24 hours') ON CONFLICT DO NOTHING`, [uuidv7(),request.tenantId,body.idempotency_key,sha256(JSON.stringify(body)),JSON.stringify(response)]);
-    });
-    return reply.code(201).send(response);
-  } catch (error) {
-    await withTransaction(request.tenantId!, (tx) => tx.query("UPDATE calls SET state='FAILED',ended_at=NOW(),disposition='PROVIDER_ERROR' WHERE id=$1", [details.callId]));
-    return reply.code(502).send(fail(request.id,502,'TELNYX_CALL_FAILED',error instanceof Error ? error.message : 'Telnyx call failed').body);
-  }
+  return reply.code(202).send(queued);
 });
 
 app.get('/api/v1/telephony/calls/:id', { preHandler: requirePermission('telephony.read') }, async (request, reply) => {

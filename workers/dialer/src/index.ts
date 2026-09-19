@@ -1,1 +1,98 @@
-const shutdown = () => process.exit(0);\nprocess.on('SIGINT', shutdown);\nprocess.on('SIGTERM', shutdown);\nconsole.log('worker dialer ready');\nsetInterval(() => undefined, 60_000);\n
+import pg from 'pg';
+import { TelnyxClient, decryptProviderSecret } from '@platform/telephony';
+import { uuidv7 } from '@platform/domain';
+
+const { Pool } = pg;
+const pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 20 });
+const concurrency = Math.max(1, Number(process.env.DIALER_CONCURRENCY ?? '5'));
+const mode = process.env.DIALER_MODE === 'sequential' ? 'sequential' : 'parallel';
+const pollMs = Math.max(250, Number(process.env.DIALER_POLL_MS ?? '1000'));
+const publicApiOrigin = process.env.PUBLIC_API_ORIGIN;
+const encryptionKey = process.env.TELEPHONY_ENCRYPTION_KEY ?? process.env.MFA_ENCRYPTION_KEY;
+const running = new Set<string>();
+let stopping = false;
+
+if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL is required');
+if (!publicApiOrigin) throw new Error('PUBLIC_API_ORIGIN is required');
+if (!encryptionKey) throw new Error('TELEPHONY_ENCRYPTION_KEY or MFA_ENCRYPTION_KEY is required');
+
+async function claimBatch(limit: number) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const result = await client.query(`
+      WITH candidates AS (
+        SELECT id FROM calls
+        WHERE state='QUEUED' AND next_attempt_at <= NOW() AND dial_attempts < max_attempts
+        ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT $1
+      )
+      UPDATE calls c SET state='INITIATED', dial_attempts=c.dial_attempts+1
+      FROM candidates x WHERE c.id=x.id
+      RETURNING c.id,c.tenant_id,c.phone_number_id,c.to_number,c.dial_attempts,c.max_attempts`, [limit]);
+    await client.query('COMMIT');
+    return result.rows;
+  } catch (error) {
+    await client.query('ROLLBACK'); throw error;
+  } finally { client.release(); }
+}
+
+async function processCall(call: any) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(`SELECT set_config('app.tenant_id',$1,true)`, [call.tenant_id]);
+    const provider = await client.query(`
+      SELECT p.api_key_encrypted,p.api_base_url,p.connection_id,p.id provider_id,n.e164
+      FROM phone_numbers n JOIN telephony_providers p ON p.id=n.provider_id
+      WHERE n.id=$1 AND n.tenant_id=$2 AND n.status='ACTIVE' AND p.status='ACTIVE'`, [call.phone_number_id, call.tenant_id]);
+    const row = provider.rows[0];
+    if (!row) throw new Error('Active telephony provider/number not found');
+    const telnyx = new TelnyxClient({ apiKey: decryptProviderSecret(row.api_key_encrypted, encryptionKey!), baseUrl: row.api_base_url, connectionId: row.connection_id });
+    const result = await telnyx.createCall({
+      to: call.to_number,
+      from: row.e164,
+      connectionId: row.connection_id,
+      webhookUrl: `${publicApiOrigin}/api/v1/webhooks/telnyx/${call.tenant_id}/${row.provider_id}`,
+      commandId: call.id,
+    });
+    await client.query(`UPDATE calls SET provider_call_id=$2,started_at=COALESCE(started_at,NOW()),last_error=NULL WHERE id=$1`, [call.id, result.callControlId]);
+    await client.query(`INSERT INTO call_legs(id,tenant_id,call_id,provider,provider_call_id,leg_index,state,from_number,to_number,started_at)
+      VALUES($1,$2,$3,'telnyx',$4,0,'INITIATED',$5,$6,NOW())`, [uuidv7(),call.tenant_id,call.id,result.callControlId,row.e164,call.to_number]);
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    const message = error instanceof Error ? error.message : 'Dial attempt failed';
+    const retry = call.dial_attempts < call.max_attempts;
+    await client.query('BEGIN');
+    await client.query(`UPDATE calls SET state=$2,last_error=$3,next_attempt_at=NOW()+($4 || ' seconds')::interval,ended_at=CASE WHEN $2='FAILED' THEN NOW() ELSE ended_at END WHERE id=$1`, [call.id,retry?'QUEUED':'FAILED',message,retry ? Math.min(300, 2 ** call.dial_attempts * 5) : 0]);
+    await client.query('COMMIT');
+  } finally { client.release(); }
+}
+
+async function tick() {
+  if (stopping) return;
+  const slots = (mode === 'sequential' ? 1 : concurrency) - running.size;
+  if (slots <= 0) return;
+  const calls = await claimBatch(slots);
+  for (const call of calls) {
+    running.add(call.id);
+    void processCall(call).finally(() => running.delete(call.id));
+  }
+}
+
+const timer = setInterval(() => void tick().catch((error) => console.error('dialer tick failed', error)), pollMs);
+void tick();
+
+async function shutdown() {
+  if (stopping) return;
+  stopping = true;
+  clearInterval(timer);
+  while (running.size) await new Promise((resolve) => setTimeout(resolve, 100));
+  await pool.end();
+  process.exit(0);
+}
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);
+console.log(`worker dialer ready mode=${mode} concurrency=${mode === 'sequential' ? 1 : concurrency}`);
+
+[executed on device: codespaces-73d925 (e215b2d9-1319-4805-9ed4-b434928d4042)]

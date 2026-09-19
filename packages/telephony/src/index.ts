@@ -1,4 +1,4 @@
-import { createPublicKey, verify as verifySignature } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createPublicKey, verify as verifySignature } from 'node:crypto';
 import { uuidv7 } from '@platform/domain';
 
 export const CALL_STATES = [
@@ -140,6 +140,17 @@ export function webhookEventType(body: unknown): string | undefined {
   if (!body || typeof body !== 'object') return undefined;
   const data = (body as { data?: { event_type?: unknown } }).data;
   return typeof data?.event_type === 'string' ? data.event_type : undefined;
+}
+
+export function decryptProviderSecret(value: string, encodedKey: string): string {
+  const payload = Buffer.from(value, 'base64');
+  if (payload.length < 29) throw new Error('Invalid encrypted provider secret');
+  const iv = payload.subarray(0, 12);
+  const tag = payload.subarray(12, 28);
+  const ciphertext = payload.subarray(28);
+  const decipher = createDecipheriv('aes-256-gcm', Buffer.from(encodedKey, 'base64'), iv);
+  decipher.setAuthTag(tag);
+  return Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString('utf8');
 }
 
 [executed on device: codespaces-73d925 (e215b2d9-1319-4805-9ed4-b434928d4042)]

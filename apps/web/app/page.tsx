@@ -1,6 +1,6 @@
 'use client';
 
-import { FormEvent, useState } from 'react';
+import { FormEvent, useEffect, useRef, useState } from 'react';
 
 const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:3001';
@@ -12,10 +12,10 @@ type ApiResponse = {
   error?: { code: string; message: string };
 };
 
-async function api(path: string, body?: Record<string, unknown>) {
+async function api(path: string, body?: Record<string, unknown>, tenantId?: string) {
   const response = await fetch(`${API_BASE}${path}`, {
     method: body ? 'POST' : 'GET',
-    ...(body ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {}),
+    ...(body || tenantId ? { headers: { 'Content-Type': 'application/json', ...(tenantId ? { 'X-Tenant-Id': tenantId } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) } : {}),
     credentials: 'include',
   });
   const payload = (await response.json().catch(() => ({}))) as ApiResponse;
@@ -34,6 +34,15 @@ export default function Home() {
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [userId, setUserId] = useState('');
+  const [tenantId, setTenantId] = useState('');
+  const [tenants, setTenants] = useState<Array<{ tenant_id: string; name: string; role: string }>>([]);
+  const [phoneNumbers, setPhoneNumbers] = useState<Array<{ id: string; provider_id: string; e164: string; label?: string }>>([]);
+  const [dialNumber, setDialNumber] = useState('');
+  const [selectedPhone, setSelectedPhone] = useState('');
+  const [dialerStatus, setDialerStatus] = useState('Disconnected');
+  const [callStatus, setCallStatus] = useState('');
+  const rtcRef = useRef<any>(null);
+  const callRef = useRef<any>(null);
 
   function resetFeedback() {
     setMessage('');
@@ -50,6 +59,10 @@ export default function Home() {
         ...(mfaCode ? { mfa_code: mfaCode } : {}),
       });
       setUserId(String(result.data?.user_id ?? ''));
+      const tenantResult = await api('/api/v1/tenants');
+      const rows = (tenantResult.data ?? []) as Array<{ tenant_id: string; name: string; role: string }> ;
+      setTenants(rows);
+      if (rows[0]) setTenantId(rows[0].tenant_id);
       setView('dashboard');
     } catch (err) {
       const text = err instanceof Error ? err.message : 'Login failed';
@@ -107,6 +120,48 @@ export default function Home() {
     setMessage('Signed out.');
   }
 
+  useEffect(() => {
+    if (view !== 'dashboard' || !tenantId) return;
+    void api('/api/v1/telephony/phone-numbers', undefined, tenantId).then((result) => {
+      setPhoneNumbers((result.data ?? []) as Array<{ id: string; provider_id: string; e164: string; label?: string }>);
+    }).catch((err) => setError(err instanceof Error ? err.message : 'Unable to load phone numbers'));
+  }, [view, tenantId]);
+
+  async function connectBrowser() {
+    resetFeedback();
+    try {
+      if (!tenantId || !selectedPhone) throw new Error('Select a workspace and caller number first.');
+      const selected = phoneNumbers.find((n) => n.id === selectedPhone);
+      if (!selected) throw new Error('Caller number not found.');
+      const result = await api(`/api/v1/telephony/providers/${selected.provider_id}/browser-token`, {}, tenantId);
+      const { TelnyxRTC } = await import('@telnyx/webrtc');
+      const client = new TelnyxRTC({ login_token: String((result.data as any)?.token) });
+      client.remoteElement = 'remoteMedia';
+      client.on('telnyx.ready', () => setDialerStatus('Ready'));
+      client.on('telnyx.error', (err: unknown) => setDialerStatus(`Error: ${String(err)}`));
+      client.on('telnyx.notification', (notification: any) => {
+        if (notification?.type === 'callUpdate') setCallStatus(notification.call?.state ?? 'updated');
+      });
+      await client.connect();
+      rtcRef.current = client;
+      setDialerStatus('Ready');
+    } catch (err) { setDialerStatus('Error'); setError(err instanceof Error ? err.message : 'Browser calling failed'); }
+  }
+
+  function placeBrowserCall() {
+    const client = rtcRef.current;
+    const selected = phoneNumbers.find((n) => n.id === selectedPhone);
+    if (!client || !selected || !dialNumber) { setError('Connect the browser and enter a destination number.'); return; }
+    try {
+      callRef.current = client.newCall({ destinationNumber: dialNumber, callerNumber: selected.e164, audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+      setCallStatus('trying');
+    } catch (err) { setError(err instanceof Error ? err.message : 'Call failed'); }
+  }
+
+  async function hangupBrowserCall() {
+    try { if (callRef.current?.hangup) await callRef.current.hangup(); else if (rtcRef.current) await rtcRef.current.disconnect(); } finally { callRef.current = null; setCallStatus('hangup'); }
+  }
+
   if (view === 'dashboard') {
     return (
       <main className="shell">
@@ -124,6 +179,26 @@ export default function Home() {
               <strong>Authenticated</strong>
               <p>Session active for user {userId}</p>
             </div>
+          </div>
+          <div className="security-panel">
+            <div>
+              <span className="eyebrow">WORKSPACE</span>
+              <h2>Telephony</h2>
+            </div>
+            <div className="grid">
+              <label>Workspace<select value={tenantId} onChange={(e) => setTenantId(e.target.value)}>{tenants.map((t) => <option key={t.tenant_id} value={t.tenant_id}>{t.name} ({t.role})</option>)}</select></label>
+              <label>Caller number<select value={selectedPhone} onChange={(e) => setSelectedPhone(e.target.value)}><option value="">Select number</option>{phoneNumbers.map((n) => <option key={n.id} value={n.id}>{n.label ? `${n.label} — ` : ''}{n.e164}</option>)}</select></label>
+            </div>
+            <div className="grid">
+              <label>Destination<input value={dialNumber} onChange={(e) => setDialNumber(e.target.value)} placeholder="+15551234567" /></label>
+              <div><span className="eyebrow">STATUS</span><p>{dialerStatus}{callStatus ? ` · ${callStatus}` : ''}</p></div>
+            </div>
+            <div className="auth-links">
+              <button className="button secondary" onClick={connectBrowser}>Connect browser</button>
+              <button className="button" onClick={placeBrowserCall}>Call</button>
+              <button className="button secondary" onClick={hangupBrowserCall}>Hang up</button>
+            </div>
+            <audio id="remoteMedia" autoPlay />
           </div>
           <div className="grid">
             {['Contacts', 'Campaigns', 'Communications', 'Sequences', 'Integrations', 'Billing'].map((item) => (
