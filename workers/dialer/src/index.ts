@@ -69,6 +69,44 @@ async function processCall(call: any) {
   } finally { client.release(); }
 }
 
+async function purgeExpiredRecordings() {
+  const client = await pool.connect();
+  try {
+    const result = await client.query(`
+      SELECT r.id,r.tenant_id,r.provider_recording_id,p.api_key_encrypted,p.api_base_url
+      FROM recordings r
+      JOIN calls c ON c.id=r.call_id AND c.tenant_id=r.tenant_id
+      JOIN phone_numbers n ON n.id=c.phone_number_id AND n.tenant_id=r.tenant_id
+      JOIN telephony_providers p ON p.id=n.provider_id AND p.tenant_id=r.tenant_id
+      WHERE r.status='AVAILABLE' AND r.expires_at IS NOT NULL AND r.expires_at <= NOW()
+      ORDER BY r.expires_at
+      LIMIT 50
+    `);
+    for (const recording of result.rows) {
+      try {
+        await client.query('SELECT set_config(\'app.tenant_id\',$1,true)', [recording.tenant_id]);
+        const telnyx = new TelnyxClient({
+          apiKey: decryptProviderSecret(recording.api_key_encrypted, encryptionKey!),
+          baseUrl: recording.api_base_url,
+        });
+        await telnyx.deleteRecording(recording.provider_recording_id);
+        await client.query(
+          'UPDATE recordings SET status=\'DELETED\',storage_url=NULL WHERE id=$1 AND tenant_id=$2',
+          [recording.id, recording.tenant_id],
+        );
+      } catch (error) {
+        console.error('recording retention failed', recording.id, error);
+        await client.query(
+          'UPDATE recordings SET status=\'RETENTION_ERROR\' WHERE id=$1 AND tenant_id=$2',
+          [recording.id, recording.tenant_id],
+        );
+      }
+    }
+  } finally {
+    client.release();
+  }
+}
+
 async function tick() {
   if (stopping) return;
   const slots = (mode === 'sequential' ? 1 : concurrency) - running.size;
