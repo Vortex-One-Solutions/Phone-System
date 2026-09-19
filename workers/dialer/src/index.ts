@@ -119,12 +119,15 @@ async function tick() {
 }
 
 const timer = setInterval(() => void tick().catch((error) => console.error('dialer tick failed', error)), pollMs);
+const retentionTimer = setInterval(() => void purgeExpiredRecordings().catch((error) => console.error('recording retention failed', error)), 60_000);
 void tick();
+void purgeExpiredRecordings();
 
 async function shutdown() {
   if (stopping) return;
   stopping = true;
   clearInterval(timer);
+  clearInterval(retentionTimer);
   while (running.size) await new Promise((resolve) => setTimeout(resolve, 100));
   await pool.end();
   process.exit(0);
