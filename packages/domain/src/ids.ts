@@ -1,5 +1,13 @@
-import { randomUUIDv7 } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 
 export function uuidv7(): string {
-  return randomUUIDv7();
+  const bytes = randomBytes(16);
+  const now = BigInt(Date.now());
+  for (let i = 5; i >= 0; i--) bytes[i] = Number((now >> BigInt((5 - i) * 8)) & 0xffn);
+  bytes[6] = (bytes[6]! & 0x0f) | 0x70;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = bytes.toString('hex');
+  return `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}`;
 }
+
+[executed on device: codespaces-73d925 (e215b2d9-1319-4805-9ed4-b434928d4042)]

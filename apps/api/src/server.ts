@@ -5,8 +5,8 @@ import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
 import rawBody from 'fastify-raw-body';
 import { Redis } from 'ioredis';
-import { randomUUIDv7 } from 'node:crypto';
 import { z } from 'zod';
+import { uuidv7 } from '@platform/domain';
 import {
   generateRecoveryCodes, hashPassword, hashRecoveryCode, hashSecret,
   hasPermission, normalizeEmail, randomToken, verifyPassword, verifyRecoveryCode,
@@ -22,7 +22,7 @@ import { decryptMfaSecret, encryptMfaSecret, secret, sha256 } from './security.j
 const redis = new Redis(config.REDIS_URL, { lazyConnect: true, maxRetriesPerRequest: 2 });
 const app = Fastify({
   loggerInstance: logger,
-  genReqId: () => randomUUIDv7(),
+  genReqId: () => uuidv7(),
   trustProxy: true,
 });
 
@@ -236,7 +236,7 @@ app.post('/api/v1/auth/register', {
     return reply.code(409).send(fail(request.id, 409, 'EMAIL_ALREADY_REGISTERED', 'Email is already registered').body);
   }
 
-  const userId = randomUUIDv7();
+  const userId = uuidv7();
   const token = randomToken();
   await query(
     `INSERT INTO users(id,email,email_normalized,password_hash,first_name,last_name)
@@ -246,7 +246,7 @@ app.post('/api/v1/auth/register', {
   await query(
     `INSERT INTO email_verification_tokens(id,user_id,token_hash,expires_at)
      VALUES($1,$2,$3,NOW()+($4 || ' seconds')::interval)`,
-    [randomUUIDv7(), userId, sha256(token), config.EMAIL_VERIFICATION_TTL_SECONDS],
+    [uuidv7(), userId, sha256(token), config.EMAIL_VERIFICATION_TTL_SECONDS],
   );
   return reply.code(201).send(ok(request.id, { id: userId, email: body.email }));
 });
@@ -307,7 +307,7 @@ app.post('/api/v1/auth/login', {
   await query(
     `INSERT INTO sessions(id,user_id,token_hash,authenticated_at,expires_at)
      VALUES($1,$2,$3,NOW(),NOW()+($4 || ' seconds')::interval)`,
-    [randomUUIDv7(), user.id, sha256(rawSession), config.SESSION_TTL_SECONDS],
+    [uuidv7(), user.id, sha256(rawSession), config.SESSION_TTL_SECONDS],
   );
   await query('UPDATE users SET last_login_at=NOW(),updated_at=NOW() WHERE id=$1', [user.id]);
   await writeAuditEvent({ tenantId: null, actorUserId: user.id, action: 'login' });
@@ -337,7 +337,7 @@ app.post('/api/v1/auth/password-reset/request', {
     await query(
       `INSERT INTO password_reset_tokens(id,user_id,token_hash,expires_at)
        VALUES($1,$2,$3,NOW()+($4 || ' seconds')::interval)`,
-      [randomUUIDv7(), user.rows[0].id, sha256(token), config.PASSWORD_RESET_TTL_SECONDS],
+      [uuidv7(), user.rows[0].id, sha256(token), config.PASSWORD_RESET_TTL_SECONDS],
     );
     request.log.info({ user_id: user.rows[0].id, reset_token: token }, 'development password reset token');
   }
@@ -409,8 +409,8 @@ app.get('/api/v1/tenants', { preHandler: requireAuth }, async (request, reply) =
 app.post('/api/v1/tenants', { preHandler: requireAuth }, async (request, reply) => {
   if (!request.userId) return reply.code(403).send(fail(request.id, 403, 'FORBIDDEN', 'Session authentication required').body);
   const body = z.object({ name: z.string().min(1).max(150), timezone: z.string().max(64).default('UTC') }).parse(request.body);
-  const tenantId = randomUUIDv7();
-  const membershipId = randomUUIDv7();
+  const tenantId = uuidv7();
+  const membershipId = uuidv7();
   await withTransaction({ tenantId, userId: request.userId ?? null }, async (client) => {
     await client.query('INSERT INTO tenants(id,name,timezone) VALUES($1,$2,$3)', [tenantId, body.name, body.timezone]);
     await client.query(
@@ -429,7 +429,7 @@ app.post('/api/v1/mfa/setup', { preHandler: requireAuth }, async (request, reply
     `INSERT INTO mfa_credentials(id,user_id,secret_encrypted)
      VALUES($1,$2,$3)
      ON CONFLICT(user_id) DO UPDATE SET secret_encrypted=EXCLUDED.secret_encrypted,enabled_at=NULL`,
-    [randomUUIDv7(), request.userId, encryptMfaSecret(secretValue, config.MFA_ENCRYPTION_KEY)],
+    [uuidv7(), request.userId, encryptMfaSecret(secretValue, config.MFA_ENCRYPTION_KEY)],
   );
   return ok(request.id, { otpauth_uri: createTotpUri(secretValue, request.userId, 'Platform') });
 });
@@ -446,7 +446,7 @@ app.post('/api/v1/mfa/enable', { preHandler: requireAuth }, async (request, repl
     await client.query('UPDATE mfa_credentials SET enabled_at=NOW() WHERE user_id=$1', [request.userId]);
     await client.query('DELETE FROM mfa_recovery_codes WHERE user_id=$1', [request.userId]);
     for (const code of codes) {
-      await client.query('INSERT INTO mfa_recovery_codes(id,user_id,code_hash) VALUES($1,$2,$3)', [randomUUIDv7(), request.userId, await hashRecoveryCode(code)]);
+      await client.query('INSERT INTO mfa_recovery_codes(id,user_id,code_hash) VALUES($1,$2,$3)', [uuidv7(), request.userId, await hashRecoveryCode(code)]);
     }
   });
   await writeAuditEvent({ tenantId: request.tenantId ?? null, actorUserId: request.userId, action: 'mfa_enabled' });
@@ -469,7 +469,7 @@ app.post('/api/v1/mfa/disable', { preHandler: requireAuth }, async (request, rep
 app.post('/api/v1/api-keys', { preHandler: requirePermission('users.manage') }, async (request, reply) => {
   const body = z.object({ name: z.string().min(1).max(150), scopes: z.array(z.enum(ALLOWED_API_KEY_SCOPES)).max(50) }).parse(request.body);
   const raw = `pk_${randomToken(32)}`;
-  const id = randomUUIDv7();
+  const id = uuidv7();
   await withTransaction({ tenantId: request.tenantId!, userId: request.userId ?? null }, async (client) => {
     await client.query(
       'INSERT INTO api_keys(id,tenant_id,name,key_hash,scopes) VALUES($1,$2,$3,$4,$5)',
@@ -530,7 +530,7 @@ app.post('/api/v1/telephony/providers', { preHandler: requirePermission('telepho
     webhook_public_key: z.string().min(20).optional(),
     api_base_url: z.string().url().optional(),
   }).parse(request.body);
-  const providerId = randomUUIDv7();
+  const providerId = uuidv7();
   const client = new TelnyxClient({ apiKey: body.api_key, ...(body.api_base_url ? { baseUrl: body.api_base_url } : {}) });
   let credentialId: string;
   try {
@@ -582,7 +582,7 @@ app.post('/api/v1/telephony/providers/:id/browser-token', { preHandler: requireP
 app.post('/api/v1/telephony/phone-numbers', { preHandler: requirePermission('telephony.manage') }, async (request, reply) => {
   const body = z.object({ provider_id: z.string().uuid(), e164: z.string(), label: z.string().max(150).optional(), capabilities: z.record(z.string(), z.boolean()).default({}) }).parse(request.body);
   const e164 = normalizeE164(body.e164);
-  const id = randomUUIDv7();
+  const id = uuidv7();
   await withTransaction({ tenantId: request.tenantId!, userId: request.userId ?? null }, async (tx) => {
     const provider = await tx.query('SELECT id FROM telephony_providers WHERE id=$1 AND status=\'ACTIVE\'', [body.provider_id]);
     if (!provider.rowCount) throw Object.assign(new Error('Provider not found'), { statusCode: 404 });
@@ -595,7 +595,7 @@ app.post('/api/v1/telephony/phone-numbers', { preHandler: requirePermission('tel
 app.post('/api/v1/telephony/suppressions', { preHandler: requirePermission('telephony.manage') }, async (request, reply) => {
   const body = z.object({ phone_e164: z.string(), reason: z.string().min(1).max(64), source: z.string().min(1).max(64), expires_at: z.string().datetime().optional() }).parse(request.body);
   const phone = normalizeE164(body.phone_e164);
-  const id = randomUUIDv7();
+  const id = uuidv7();
   await withTransaction(request.tenantId!, async (tx) => {
     await tx.query(`INSERT INTO contact_suppressions(id,tenant_id,phone_e164,reason,source,expires_at)
       VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT (tenant_id,phone_e164) DO UPDATE SET reason=EXCLUDED.reason,source=EXCLUDED.source,expires_at=EXCLUDED.expires_at`,
@@ -623,7 +623,7 @@ app.post('/api/v1/telephony/calls', { preHandler: requirePermission('telephony.m
     if (!row) throw Object.assign(new Error('Provider or phone number not found'), { statusCode: 404 });
     const suppressed = await tx.query('SELECT 1 FROM contact_suppressions WHERE tenant_id=$1 AND phone_e164=$2 AND (expires_at IS NULL OR expires_at>NOW())', [request.tenantId, to]);
     if (suppressed.rowCount) throw Object.assign(new Error('Destination is suppressed'), { statusCode: 409 });
-    const callId = randomUUIDv7();
+    const callId = uuidv7();
     await tx.query(`INSERT INTO calls(id,tenant_id,contact_id,campaign_id,assigned_user_id,phone_number_id,direction,state,from_number,to_number)
       VALUES($1,$2,$3,$4,$5,$6,'OUTBOUND','QUEUED',$7,$8)`, [callId,request.tenantId,body.contact_id??null,body.campaign_id??null,body.assigned_user_id??null,body.phone_number_id,row.e164,to]);
     return { ...row, callId };
@@ -636,9 +636,9 @@ app.post('/api/v1/telephony/calls', { preHandler: requirePermission('telephony.m
     await withTransaction(request.tenantId!, async (tx) => {
       await tx.query(`UPDATE calls SET state='INITIATED',provider_call_id=$2,started_at=COALESCE(started_at,NOW()) WHERE id=$1`, [details.callId, providerCall.callControlId]);
       await tx.query(`INSERT INTO call_legs(id,tenant_id,call_id,provider,provider_call_id,leg_index,state,from_number,to_number,started_at)
-        VALUES($1,$2,$3,'telnyx',$4,0,'INITIATED',$5,$6,NOW())`, [randomUUIDv7(),request.tenantId,details.callId,providerCall.callControlId,details.e164,to]);
+        VALUES($1,$2,$3,'telnyx',$4,0,'INITIATED',$5,$6,NOW())`, [uuidv7(),request.tenantId,details.callId,providerCall.callControlId,details.e164,to]);
       if (body.idempotency_key) await tx.query(`INSERT INTO idempotency_keys(id,tenant_id,idempotency_key,request_hash,response_status,response_body,expires_at)
-        VALUES($1,$2,$3,$4,201,$5,NOW()+INTERVAL '24 hours') ON CONFLICT DO NOTHING`, [randomUUIDv7(),request.tenantId,body.idempotency_key,sha256(JSON.stringify(body)),JSON.stringify(response)]);
+        VALUES($1,$2,$3,$4,201,$5,NOW()+INTERVAL '24 hours') ON CONFLICT DO NOTHING`, [uuidv7(),request.tenantId,body.idempotency_key,sha256(JSON.stringify(body)),JSON.stringify(response)]);
     });
     return reply.code(201).send(response);
   } catch (error) {
@@ -674,7 +674,7 @@ app.post('/api/v1/webhooks/telnyx/:tenantId/:providerId', { config: { rawBody: t
     if(eventId){
       const inserted=await tx.query(`INSERT INTO call_events(id,tenant_id,call_id,provider_event_id,event_type,payload,occurred_at)
         SELECT $1,$2,id,$3,$4,$5,$6 FROM calls WHERE provider_call_id=$7
-        ON CONFLICT (tenant_id,provider_event_id) DO NOTHING RETURNING id`,[randomUUIDv7(),params.tenantId,eventId,eventType,JSON.stringify(request.body),occurredAt,callControlId??'']);
+        ON CONFLICT (tenant_id,provider_event_id) DO NOTHING RETURNING id`,[uuidv7(),params.tenantId,eventId,eventType,JSON.stringify(request.body),occurredAt,callControlId??'']);
       if(!inserted.rowCount) return;
     }
     if(!callControlId) return;
@@ -683,7 +683,7 @@ app.post('/api/v1/webhooks/telnyx/:tenantId/:providerId', { config: { rawBody: t
       const current=await tx.query<{id:string}>('SELECT id FROM calls WHERE provider_call_id=$1',[callControlId]);
       const call=current.rows[0];
       const recordingId=typeof payload.recording_id==='string'?payload.recording_id:null;
-      if(call && recordingId) await tx.query(`INSERT INTO recordings(id,tenant_id,call_id,provider_recording_id,status) VALUES($1,$2,$3,$4,'AVAILABLE') ON CONFLICT DO NOTHING`,[randomUUIDv7(),params.tenantId,call.id,recordingId]);
+      if(call && recordingId) await tx.query(`INSERT INTO recordings(id,tenant_id,call_id,provider_recording_id,status) VALUES($1,$2,$3,$4,'AVAILABLE') ON CONFLICT DO NOTHING`,[uuidv7(),params.tenantId,call.id,recordingId]);
       return;
     }
     const next=eventState[eventType];

@@ -129,6 +129,9 @@ importers:
       '@platform/database':
         specifier: workspace:*
         version: link:../database
+      '@platform/domain':
+        specifier: workspace:*
+        version: link:../domain
 
   packages/database:
     dependencies:
@@ -995,8 +998,5 @@ packages:
   esbuild@0.28.2:
     resolution: {integrity: sha512-HKVLS8dvII+xoKW9kmqxbRKrnWEXfJJr/FZhhJmiqIB0e053QNYFqOBouTMO/k5sID4MvCiUCvv8b9M4h32wIA==}
     engines: {node: '>=18'}
-    hasBin: true
-
-  estree-walker@3.0.3:
 
 [executed on device: codespaces-73d925 (e215b2d9-1319-4805-9ed4-b434928d4042)]

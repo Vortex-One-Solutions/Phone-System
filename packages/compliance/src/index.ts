@@ -1,4 +1,4 @@
-import { randomUUIDv7 } from 'node:crypto';
+import { uuidv7 } from '@platform/domain';
 import { withTransaction } from '@platform/database';
 
 export async function writeAuditEvent(input: {
@@ -19,7 +19,7 @@ export async function writeAuditEvent(input: {
           (id, tenant_id, actor_user_id, action, resource_type, resource_id, ip_address, user_agent, metadata)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
         [
-          randomUUIDv7(), input.tenantId ?? null, input.actorUserId ?? null, input.action,
+          uuidv7(), input.tenantId ?? null, input.actorUserId ?? null, input.action,
           input.resourceType ?? null, input.resourceId ?? null, input.ipAddress ?? null,
           input.userAgent ?? null, input.metadata ?? null,
         ],
@@ -27,3 +27,5 @@ export async function writeAuditEvent(input: {
     },
   );
 }
+
+[executed on device: codespaces-73d925 (e215b2d9-1319-4805-9ed4-b434928d4042)]
