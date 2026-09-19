@@ -1,3 +1,5 @@
+[Reading 128 lines from start (total: 128 lines, 0 remaining)]
+
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import pg from 'pg';
 
@@ -17,7 +19,7 @@ describe.skipIf(!databaseUrl)('PostgreSQL tenant isolation', () => {
     await client.connect();
 
     await client.query('BEGIN');
-    await client.query('SET LOCAL ROLE platform_app');
+    await client.query('SET LOCAL ROLE postgres');
 
     await client.query(
       `INSERT INTO tenants(id,name) VALUES ($1,'RLS Test A'),($2,'RLS Test B')
@@ -45,7 +47,7 @@ describe.skipIf(!databaseUrl)('PostgreSQL tenant isolation', () => {
 
   afterAll(async () => {
     await client.query('BEGIN');
-    await client.query('SET LOCAL ROLE platform_app');
+    await client.query('SET LOCAL ROLE postgres');
     await client.query(
       'DELETE FROM tenant_memberships WHERE tenant_id IN ($1,$2)',
       [tenantA, tenantB],
@@ -58,6 +60,7 @@ describe.skipIf(!databaseUrl)('PostgreSQL tenant isolation', () => {
 
   async function asTenant(tenantId: string, userId: string) {
     await client.query('BEGIN');
+    await client.query('SET LOCAL ROLE platform_app');
     await client.query(
       `SELECT
         set_config('app.tenant_id',$1,true),
@@ -125,3 +128,4 @@ describe.skipIf(!databaseUrl)('PostgreSQL tenant isolation', () => {
     await client.query('ROLLBACK');
   });
 });
+

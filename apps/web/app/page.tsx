@@ -1,3 +1,5 @@
+[Reading 346 lines from start (total: 346 lines, 0 remaining)]
+
 'use client';
 
 import { FormEvent, useEffect, useRef, useState } from 'react';
@@ -41,6 +43,18 @@ export default function Home() {
   const [selectedPhone, setSelectedPhone] = useState('');
   const [dialerStatus, setDialerStatus] = useState('Disconnected');
   const [callStatus, setCallStatus] = useState('');
+  const [conversations, setConversations] = useState<any[]>([]);
+  const [selectedConversation, setSelectedConversation] = useState<any | null>(null);
+  const [conversationMessages, setConversationMessages] = useState<any[]>([]);
+  const [communicationProviders, setCommunicationProviders] = useState<any[]>([]);
+  const [emailAccounts, setEmailAccounts] = useState<any[]>([]);
+  const [smsTo, setSmsTo] = useState('');
+  const [smsText, setSmsText] = useState('');
+  const [smsContactId, setSmsContactId] = useState('');
+  const [emailAccountId, setEmailAccountId] = useState('');
+  const [emailTo, setEmailTo] = useState('');
+  const [emailSubject, setEmailSubject] = useState('');
+  const [emailBody, setEmailBody] = useState('');
   const rtcRef = useRef<any>(null);
   const callRef = useRef<any>(null);
 
@@ -122,10 +136,45 @@ export default function Home() {
 
   useEffect(() => {
     if (view !== 'dashboard' || !tenantId) return;
-    void api('/api/v1/telephony/phone-numbers', undefined, tenantId).then((result) => {
-      setPhoneNumbers((result.data ?? []) as Array<{ id: string; provider_id: string; e164: string; label?: string }>);
-    }).catch((err) => setError(err instanceof Error ? err.message : 'Unable to load phone numbers'));
+    void Promise.all([
+      api('/api/v1/telephony/phone-numbers', undefined, tenantId),
+      api('/api/v1/telephony/providers', undefined, tenantId),
+      api('/api/v1/communications/conversations', undefined, tenantId),
+      api('/api/v1/communications/email/accounts', undefined, tenantId),
+    ]).then(([phones, providers, convs, accounts]) => {
+      setPhoneNumbers((phones.data ?? []) as Array<{ id: string; provider_id: string; e164: string; label?: string }>);
+      setCommunicationProviders((providers.data ?? []) as any[]);
+      setConversations((convs.data ?? []) as any[]);
+      setEmailAccounts((accounts.data ?? []) as any[]);
+      if (!emailAccountId && accounts.data?.[0]) setEmailAccountId(String((accounts.data as unknown as any[])[0].id));
+    }).catch((err) => setError(err instanceof Error ? err.message : 'Unable to load communications'));
   }, [view, tenantId]);
+
+
+  async function openConversation(conversation: any) {
+    setSelectedConversation(conversation);
+    try { const result = await api(`/api/v1/communications/conversations/${conversation.id}/messages`, undefined, tenantId); setConversationMessages((result.data ?? []) as any[]); } catch (err) { setError(err instanceof Error ? err.message : 'Unable to load conversation'); }
+  }
+
+  async function sendSms(event: FormEvent) {
+    event.preventDefault(); resetFeedback();
+    const provider = communicationProviders.find((p) => p.status === 'ACTIVE');
+    const sender = phoneNumbers.find((n: any) => n.status === 'ACTIVE');
+    try {
+      if (!provider || !sender || !smsContactId) throw new Error('Select an active Telnyx provider, caller number, and contact ID.');
+      await api('/api/v1/communications/sms', { provider_id: provider.id, from_number: sender.e164, to: smsTo, text: smsText, contact_id: smsContactId, idempotency_key: crypto.randomUUID() }, tenantId);
+      setSmsText(''); setMessage('SMS queued/sent.');
+    } catch (err) { setError(err instanceof Error ? err.message : 'SMS send failed'); }
+  }
+
+  async function connectMailbox(provider: 'google'|'microsoft') {
+    try { const result = await api(`/api/v1/communications/email/${provider}/connect`, undefined, tenantId); window.location.href = String((result.data as any)?.authorize_url); } catch (err) { setError(err instanceof Error ? err.message : 'Mailbox connection failed'); }
+  }
+
+  async function sendEmail(event: FormEvent) {
+    event.preventDefault(); resetFeedback();
+    try { if (!emailAccountId) throw new Error('Connect/select an email account first.'); await api(`/api/v1/communications/email/${emailAccountId}/send`, { to: emailTo.split(',').map((v) => v.trim()).filter(Boolean), subject: emailSubject, text: emailBody, idempotency_key: crypto.randomUUID() }, tenantId); setEmailBody(''); setMessage('Email submitted to the provider.'); } catch (err) { setError(err instanceof Error ? err.message : 'Email send failed'); }
+  }
 
   async function connectBrowser() {
     resetFeedback();
@@ -200,14 +249,25 @@ export default function Home() {
             </div>
             <audio id="remoteMedia" autoPlay />
           </div>
-          <div className="grid">
-            {['Contacts', 'Campaigns', 'Communications', 'Sequences', 'Integrations', 'Billing'].map((item) => (
-              <div className="module" key={item}>
-                <span className="module-icon">+</span>
-                <strong>{item}</strong>
-                <small>Coming in a future handoff</small>
+          <div className="security-panel">
+            <div><span className="eyebrow">COMMUNICATIONS</span><h2>Unified inbox</h2></div>
+            <div className="grid">
+              <div>
+                <strong>Conversations</strong>
+                <div className="module-list">{conversations.map((c) => <button className="module" key={c.id} onClick={() => void openConversation(c)}><strong>{c.display_name || c.email || c.phone_e164 || 'Contact'}</strong><small>{c.channel} · {c.status} · {c.unread_count ?? 0} unread</small></button>)}</div>
               </div>
-            ))}
+              <div>
+                <strong>Timeline / messages</strong>
+                <div className="module-list">{conversationMessages.map((m) => <div className="module" key={m.id}><strong>{m.direction} · {m.status}</strong><small>{m.body || '[media/email]'}</small></div>)}</div>
+              </div>
+            </div>
+          </div>
+          <div className="grid">
+            <div className="security-panel"><span className="eyebrow">SMS / MMS</span><h2>Send message</h2><form onSubmit={sendSms}><label>Contact ID<input value={smsContactId} onChange={(e)=>setSmsContactId(e.target.value)} placeholder="UUID" required /></label><label>To<input value={smsTo} onChange={(e)=>setSmsTo(e.target.value)} placeholder="+15551234567" required /></label><label>Message<textarea value={smsText} onChange={(e)=>setSmsText(e.target.value)} maxLength={1600} required /></label><button className="button" type="submit">Send SMS</button></form></div>
+            <div className="security-panel"><span className="eyebrow">EMAIL</span><h2>Connected mailboxes</h2><div className="auth-links"><button className="button secondary" onClick={()=>void connectMailbox('google')}>Connect Gmail</button><button className="button secondary" onClick={()=>void connectMailbox('microsoft')}>Connect Microsoft 365</button></div><select value={emailAccountId} onChange={(e)=>setEmailAccountId(e.target.value)}><option value="">Select mailbox</option>{emailAccounts.map((a)=><option key={a.id} value={a.id}>{a.provider} — {a.email} ({a.sync_status})</option>)}</select><form onSubmit={sendEmail}><label>To<input value={emailTo} onChange={(e)=>setEmailTo(e.target.value)} placeholder="owner@example.com" required /></label><label>Subject<input value={emailSubject} onChange={(e)=>setEmailSubject(e.target.value)} required /></label><label>Body<textarea value={emailBody} onChange={(e)=>setEmailBody(e.target.value)} required /></label><button className="button" type="submit">Send email</button></form></div>
+          </div>
+          <div className="grid">
+            {['Contacts', 'Campaigns', 'Sequences', 'Integrations', 'Billing'].map((item) => <div className="module" key={item}><span className="module-icon">+</span><strong>{item}</strong><small>Reserved for a later handoff</small></div>)}
           </div>
           <div className="security-panel">
             <div>
@@ -286,4 +346,4 @@ export default function Home() {
   );
 }
 
-[executed on device: codespaces-73d925 (e215b2d9-1319-4805-9ed4-b434928d4042)]
+

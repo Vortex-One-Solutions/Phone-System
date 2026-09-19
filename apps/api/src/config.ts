@@ -1,3 +1,5 @@
+[Reading 30 lines from start (total: 30 lines, 0 remaining)]
+
 import { z } from 'zod';
 
 export const config = z.object({
@@ -14,7 +16,18 @@ export const config = z.object({
   MFA_ENCRYPTION_KEY: z.string().min(1),
   TELEPHONY_ENCRYPTION_KEY: z.string().min(1).optional(),
   TELNYX_WEBHOOK_MAX_AGE_SECONDS: z.coerce.number().int().positive().default(300),
+  COMMUNICATION_WEBHOOK_SECRET: z.string().min(16).optional(),
+  GOOGLE_CLIENT_ID: z.string().optional(),
+  GOOGLE_CLIENT_SECRET: z.string().optional(),
+  MICROSOFT_CLIENT_ID: z.string().optional(),
+  MICROSOFT_CLIENT_SECRET: z.string().optional(),
+  MICROSOFT_TENANT: z.string().default('common'),
+  GOOGLE_PUBSUB_TOPIC: z.string().optional(),
+  GOOGLE_PUBSUB_AUDIENCE: z.string().optional(),
+  GOOGLE_PUBSUB_VERIFICATION_TOKEN: z.string().optional(),
+  GOOGLE_PUBSUB_SERVICE_ACCOUNT: z.string().optional(),
+  MEDIA_ROOT: z.string().default('/tmp/platform-media'),
   LOG_LEVEL: z.string().default('info'),
 }).parse(process.env);
 
-[executed on device: codespaces-73d925 (e215b2d9-1319-4805-9ed4-b434928d4042)]
+

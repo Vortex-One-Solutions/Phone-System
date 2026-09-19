@@ -1,0 +1,14 @@
+[Reading 11 lines from start (total: 11 lines, 0 remaining)]
+
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import pg from 'pg';
+import { randomUUID } from 'node:crypto';
+const url=process.env.DATABASE_URL;
+describe.skipIf(!url)('communication tenant isolation',()=>{
+ let admin:pg.Client; const a=randomUUID(),b=randomUUID(),ua=randomUUID(),ub=randomUUID(),ca=randomUUID(),cb=randomUUID();
+ beforeAll(async()=>{admin=new pg.Client({connectionString:url});await admin.connect();await admin.query('BEGIN');await admin.query('SET LOCAL ROLE postgres');await admin.query(`INSERT INTO tenants(id,name) VALUES($1,'Comm A'),($2,'Comm B')`,[a,b]);await admin.query(`INSERT INTO users(id,email,email_normalized,password_hash) VALUES($1,$2,$2,'x'),($3,$4,$4,'x')`,[ua,`${ua}@test.invalid`,ub,`${ub}@test.invalid`]);await admin.query(`INSERT INTO tenant_memberships(id,tenant_id,user_id,role) VALUES($1,$2,$3,'OWNER'),($4,$5,$6,'OWNER')`,[randomUUID(),a,ua,randomUUID(),b,ub]);await admin.query(`INSERT INTO communication_contacts(id,tenant_id,phone_e164,consent_status) VALUES($1,$2,'+14155550001','OPTED_IN'),($3,$4,'+14155550002','OPTED_IN')`,[ca,a,cb,b]);await admin.query(`INSERT INTO conversations(id,tenant_id,contact_id,channel,thread_key) VALUES($1,$2,$3,'SMS','+14155550001'),($4,$5,$6,'SMS','+14155550002')`,[randomUUID(),a,ca,randomUUID(),b,cb]);await admin.query('COMMIT');});
+ afterAll(async()=>{await admin.query('BEGIN');await admin.query('SET LOCAL ROLE postgres');await admin.query('DELETE FROM tenants WHERE id IN ($1,$2)',[a,b]);await admin.query('COMMIT');await admin.end();});
+ it('prevents cross-tenant communication reads',async()=>{await admin.query('BEGIN');await admin.query('SET LOCAL ROLE platform_app');await admin.query("SELECT set_config('app.tenant_id',$1,true)",[a]);const contacts=await admin.query('SELECT id FROM communication_contacts ORDER BY id');const convs=await admin.query('SELECT tenant_id FROM conversations ORDER BY tenant_id');expect(contacts.rows).toHaveLength(1);expect(contacts.rows[0].id).toBe(ca);expect(convs.rows).toEqual([{tenant_id:a}]);await admin.query('ROLLBACK');});
+ it('rejects cross-tenant communication inserts',async()=>{await admin.query('BEGIN');await admin.query('SET LOCAL ROLE platform_app');await admin.query("SELECT set_config('app.tenant_id',$1,true)",[a]);await expect(admin.query(`INSERT INTO communication_contacts(id,tenant_id,phone_e164) VALUES($1,$2,'+14155550003')`,[randomUUID(),b])).rejects.toThrow();await admin.query('ROLLBACK');});
+});
+

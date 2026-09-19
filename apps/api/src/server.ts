@@ -1,3 +1,5 @@
+[Reading 721 lines from start (total: 721 lines, 0 remaining)]
+
 import Fastify from 'fastify';
 import cookie from '@fastify/cookie';
 import cors from '@fastify/cors';
@@ -15,6 +17,7 @@ import {
 import { query, withTransaction } from '@platform/database';
 import { writeAuditEvent } from '@platform/compliance';
 import { TelnyxClient, assertTransition, normalizeE164, webhookEventId, webhookEventType } from '@platform/telephony';
+import { registerCommunicationRoutes } from './communications.js';
 import { logger } from '@platform/observability';
 import { config } from './config.js';
 import { decryptMfaSecret, encryptMfaSecret, secret, sha256 } from './security.js';
@@ -715,6 +718,7 @@ const shutdown = async () => {
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
 
+await registerCommunicationRoutes(app);
 await app.listen({ host: '0.0.0.0', port: config.PORT });
 
-[executed on device: codespaces-73d925 (e215b2d9-1319-4805-9ed4-b434928d4042)]
+
