@@ -686,7 +686,7 @@ app.post('/api/v1/webhooks/telnyx/:tenantId/:providerId', { config: { rawBody: t
       const current=await tx.query<{id:string}>('SELECT id FROM calls WHERE provider_call_id=$1',[callControlId]);
       const call=current.rows[0];
       const recordingId=typeof payload.recording_id==='string'?payload.recording_id:null;
-      if(call && recordingId) await tx.query(`INSERT INTO recordings(id,tenant_id,call_id,provider_recording_id,status) VALUES($1,$2,$3,$4,'AVAILABLE') ON CONFLICT DO NOTHING`,[uuidv7(),params.tenantId,call.id,recordingId]);
+      if(call && recordingId) await tx.query(`INSERT INTO recordings(id,tenant_id,call_id,provider_recording_id,status,expires_at) VALUES($1,$2,$3,$4,'AVAILABLE',NOW()+($5 || ' days')::interval) ON CONFLICT DO NOTHING`,[uuidv7(),params.tenantId,call.id,recordingId,config.RECORDING_RETENTION_DAYS]);
       return;
     }
     const next=eventState[eventType];
