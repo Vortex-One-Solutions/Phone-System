@@ -3,7 +3,8 @@ import cookie from '@fastify/cookie';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
-import Redis from 'ioredis';
+import rawBody from 'fastify-raw-body';
+import { Redis } from 'ioredis';
 import { randomUUIDv7 } from 'node:crypto';
 import { z } from 'zod';
 import {
@@ -13,6 +14,7 @@ import {
 } from '@platform/auth';
 import { query, withTransaction } from '@platform/database';
 import { writeAuditEvent } from '@platform/compliance';
+import { TelnyxClient, assertTransition, normalizeE164, webhookEventId, webhookEventType } from '@platform/telephony';
 import { logger } from '@platform/observability';
 import { config } from './config.js';
 import { decryptMfaSecret, encryptMfaSecret, secret, sha256 } from './security.js';
@@ -27,6 +29,7 @@ const app = Fastify({
 await app.register(cookie, { secret: secret(32) });
 await app.register(cors, { origin: config.WEB_ORIGIN, credentials: true });
 await app.register(helmet);
+await app.register(rawBody, { field: 'rawBody', global: false, runFirst: true });
 await app.register(rateLimit, {
   global: false,
   redis,
@@ -39,6 +42,7 @@ declare module 'fastify' {
     tenantId?: string;
     role?: import('@platform/domain/types').Role;
     authType?: 'session' | 'api_key';
+    rawBody?: string | Buffer;
   }
 }
 
@@ -50,6 +54,8 @@ const ALLOWED_API_KEY_SCOPES = [
   'billing.manage',
   'audit.read',
   'recordings.read',
+  'telephony.read',
+  'telephony.manage',
 ] as const;
 
 function ok<T>(requestId: string, data: T, meta: Record<string, unknown> = {}) {
@@ -63,7 +69,7 @@ async function resolveTenant(
   userId: string,
   tenantId: string,
 ): Promise<{ role: import('@platform/domain/types').Role } | null> {
-  return withTransaction({ tenantId, userId }, async (client) => {
+  return withTransaction({ tenantId, userId: userId ?? null }, async (client) => {
     const result = await client.query<{ role: import('@platform/domain/types').Role }>(
       'SELECT role FROM tenant_memberships WHERE user_id=$1 AND tenant_id=$2 AND status=$3',
       [userId, tenantId, 'ACTIVE'],
@@ -102,7 +108,6 @@ async function authenticate(request: import('fastify').FastifyRequest, reply: im
       },
     );
     if (key) {
-      request.userId = undefined;
       request.tenantId = key.tenant_id;
       request.authType = 'api_key';
       request.headers['x-api-scopes'] = JSON.stringify(key.scopes);
@@ -147,10 +152,10 @@ async function withRequestTenant<T>(
   fn: (client: import('pg').PoolClient) => Promise<T>,
 ): Promise<T> {
   if (!request.tenantId) throw new Error('Tenant context is required');
-  return withTransaction({ tenantId: request.tenantId, userId: request.userId }, fn);
+  return withTransaction({ tenantId: request.tenantId, userId: request.userId ?? null }, fn);
 }
 
-async function requirePermission(permission: import('@platform/domain/types').Permission) {
+function requirePermission(permission: import('@platform/domain/types').Permission) {
   return async (request: import('fastify').FastifyRequest, reply: import('fastify').FastifyReply) => {
     const result = await requireAuth(request, reply);
     if (result) return result;
@@ -406,7 +411,7 @@ app.post('/api/v1/tenants', { preHandler: requireAuth }, async (request, reply) 
   const body = z.object({ name: z.string().min(1).max(150), timezone: z.string().max(64).default('UTC') }).parse(request.body);
   const tenantId = randomUUIDv7();
   const membershipId = randomUUIDv7();
-  await withTransaction({ tenantId, userId: request.userId }, async (client) => {
+  await withTransaction({ tenantId, userId: request.userId ?? null }, async (client) => {
     await client.query('INSERT INTO tenants(id,name,timezone) VALUES($1,$2,$3)', [tenantId, body.name, body.timezone]);
     await client.query(
       'INSERT INTO tenant_memberships(id,tenant_id,user_id,role) VALUES($1,$2,$3,$4)',
@@ -511,11 +516,195 @@ app.get('/api/v1/audit-events', { preHandler: requirePermission('audit.read') },
   return ok(request.id, data, { next_cursor: hasNext ? data.at(-1)?.created_at : null });
 });
 
+// Telephony: provider configuration, browser credentials, call lifecycle, and signed webhooks.
+function telephonyKey(): string {
+  return config.TELEPHONY_ENCRYPTION_KEY ?? config.MFA_ENCRYPTION_KEY;
+}
+
+app.post('/api/v1/telephony/providers', { preHandler: requirePermission('telephony.manage') }, async (request, reply) => {
+  const body = z.object({
+    name: z.string().min(1).max(150),
+    provider: z.literal('telnyx').default('telnyx'),
+    api_key: z.string().min(20),
+    connection_id: z.string().min(1).max(150),
+    webhook_public_key: z.string().min(20).optional(),
+    api_base_url: z.string().url().optional(),
+  }).parse(request.body);
+  const providerId = randomUUIDv7();
+  const client = new TelnyxClient({ apiKey: body.api_key, ...(body.api_base_url ? { baseUrl: body.api_base_url } : {}) });
+  let credentialId: string;
+  try {
+    credentialId = (await client.createTelephonyCredential(`platform-${providerId}`, body.connection_id)).id;
+  } catch (error) {
+    return reply.code(502).send(fail(request.id, 502, 'TELNYX_CREDENTIAL_CREATE_FAILED', error instanceof Error ? error.message : 'Telnyx credential creation failed').body);
+  }
+  await withTransaction({ tenantId: request.tenantId!, userId: request.userId ?? null }, async (tx) => {
+    await tx.query(
+      `INSERT INTO telephony_providers
+       (id,tenant_id,provider,name,api_base_url,api_key_encrypted,webhook_public_key,connection_id,credential_id)
+       VALUES($1,$2,'telnyx',$3,$4,$5,$6,$7,$8)`,
+      [providerId, request.tenantId, body.name, body.api_base_url ?? 'https://api.telnyx.com/v2',
+       encryptMfaSecret(body.api_key, telephonyKey()), body.webhook_public_key ?? null, body.connection_id, credentialId],
+    );
+  });
+  await writeAuditEvent({ tenantId: request.tenantId!, actorUserId: request.userId ?? null, action: 'telephony_provider_created', resourceType: 'telephony_provider', resourceId: providerId });
+  return reply.code(201).send(ok(request.id, { id: providerId, provider: 'telnyx', name: body.name, connection_id: body.connection_id, credential_id: credentialId,
+    webhook_path: `/api/v1/webhooks/telnyx/${request.tenantId}/${providerId}` }));
+});
+
+app.get('/api/v1/telephony/providers', { preHandler: requirePermission('telephony.read') }, async (request) => {
+  const result = await withTransaction(request.tenantId!, (tx) => tx.query(
+    `SELECT id,provider,name,api_base_url,connection_id,credential_id,status,created_at,updated_at
+     FROM telephony_providers ORDER BY created_at DESC`,
+  ));
+  return ok(request.id, result.rows);
+});
+
+app.post('/api/v1/telephony/providers/:id/browser-token', { preHandler: requirePermission('telephony.manage') }, async (request, reply) => {
+  const params = z.object({ id: z.string().uuid() }).parse(request.params);
+  const provider = await withTransaction(request.tenantId!, (tx) => tx.query<{ api_key_encrypted: string; api_base_url: string; credential_id: string | null; connection_id: string }>(
+    'SELECT api_key_encrypted,api_base_url,credential_id,connection_id FROM telephony_providers WHERE id=$1 AND status=\'ACTIVE\'', [params.id],
+  ));
+  const row = provider.rows[0];
+  if (!row?.connection_id) return reply.code(404).send(fail(request.id, 404, 'TELEPHONY_PROVIDER_NOT_FOUND', 'Provider connection is not configured').body);
+  try {
+    const client = new TelnyxClient({ apiKey: decryptMfaSecret(row.api_key_encrypted, telephonyKey()), baseUrl: row.api_base_url });
+    const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+    const credential = await client.createTelephonyCredential(`browser-${request.userId ?? 'api'}-${Date.now()}`, row.connection_id, expiresAt);
+    const token = await client.createCredentialToken(credential.id);
+    await withTransaction(request.tenantId!, (tx) => tx.query('UPDATE telephony_providers SET credential_id=$2,updated_at=NOW() WHERE id=$1',[params.id,credential.id]));
+    return ok(request.id, { token, expires_in: 86400 });
+  } catch (error) {
+    return reply.code(502).send(fail(request.id, 502, 'TELNYX_TOKEN_FAILED', error instanceof Error ? error.message : 'Telnyx token request failed').body);
+  }
+});
+
+app.post('/api/v1/telephony/phone-numbers', { preHandler: requirePermission('telephony.manage') }, async (request, reply) => {
+  const body = z.object({ provider_id: z.string().uuid(), e164: z.string(), label: z.string().max(150).optional(), capabilities: z.record(z.string(), z.boolean()).default({}) }).parse(request.body);
+  const e164 = normalizeE164(body.e164);
+  const id = randomUUIDv7();
+  await withTransaction({ tenantId: request.tenantId!, userId: request.userId ?? null }, async (tx) => {
+    const provider = await tx.query('SELECT id FROM telephony_providers WHERE id=$1 AND status=\'ACTIVE\'', [body.provider_id]);
+    if (!provider.rowCount) throw Object.assign(new Error('Provider not found'), { statusCode: 404 });
+    await tx.query('INSERT INTO phone_numbers(id,tenant_id,provider_id,e164,label,capabilities) VALUES($1,$2,$3,$4,$5,$6)',
+      [id, request.tenantId, body.provider_id, e164, body.label ?? null, JSON.stringify(body.capabilities)]);
+  });
+  return reply.code(201).send(ok(request.id, { id, e164, label: body.label ?? null }));
+});
+
+app.post('/api/v1/telephony/suppressions', { preHandler: requirePermission('telephony.manage') }, async (request, reply) => {
+  const body = z.object({ phone_e164: z.string(), reason: z.string().min(1).max(64), source: z.string().min(1).max(64), expires_at: z.string().datetime().optional() }).parse(request.body);
+  const phone = normalizeE164(body.phone_e164);
+  const id = randomUUIDv7();
+  await withTransaction(request.tenantId!, async (tx) => {
+    await tx.query(`INSERT INTO contact_suppressions(id,tenant_id,phone_e164,reason,source,expires_at)
+      VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT (tenant_id,phone_e164) DO UPDATE SET reason=EXCLUDED.reason,source=EXCLUDED.source,expires_at=EXCLUDED.expires_at`,
+      [id, request.tenantId, phone, body.reason, body.source, body.expires_at ? new Date(body.expires_at) : null]);
+  });
+  return reply.code(201).send(ok(request.id, { id, phone_e164: phone }));
+});
+
+app.post('/api/v1/telephony/calls', { preHandler: requirePermission('telephony.manage') }, async (request, reply) => {
+  const body = z.object({
+    provider_id: z.string().uuid(), phone_number_id: z.string().uuid(), to: z.string(), contact_id: z.string().uuid().optional(), campaign_id: z.string().uuid().optional(), assigned_user_id: z.string().uuid().optional(),
+    idempotency_key: z.string().min(8).max(255).optional(), answering_machine_detection: z.boolean().default(false),
+  }).parse(request.body);
+  const to = normalizeE164(body.to);
+  const existing = body.idempotency_key ? await withTransaction(request.tenantId!, (tx) => tx.query<{ response_body: unknown }>(
+    `SELECT response_body FROM idempotency_keys WHERE tenant_id=$1 AND idempotency_key=$2 AND expires_at>NOW()`, [request.tenantId, body.idempotency_key])) : null;
+  if (existing?.rows[0]) return reply.code(200).send(existing.rows[0].response_body);
+
+  const details = await withTransaction(request.tenantId!, async (tx) => {
+    const result = await tx.query<{ provider_id:string; api_base_url:string; api_key_encrypted:string; connection_id:string; e164:string }>(
+      `SELECT p.id provider_id,p.api_base_url,p.api_key_encrypted,p.connection_id,n.e164
+       FROM telephony_providers p JOIN phone_numbers n ON n.provider_id=p.id AND n.tenant_id=p.tenant_id
+       WHERE p.id=$1 AND n.id=$2 AND p.status='ACTIVE' AND n.status='ACTIVE'`, [body.provider_id, body.phone_number_id]);
+    const row = result.rows[0];
+    if (!row) throw Object.assign(new Error('Provider or phone number not found'), { statusCode: 404 });
+    const suppressed = await tx.query('SELECT 1 FROM contact_suppressions WHERE tenant_id=$1 AND phone_e164=$2 AND (expires_at IS NULL OR expires_at>NOW())', [request.tenantId, to]);
+    if (suppressed.rowCount) throw Object.assign(new Error('Destination is suppressed'), { statusCode: 409 });
+    const callId = randomUUIDv7();
+    await tx.query(`INSERT INTO calls(id,tenant_id,contact_id,campaign_id,assigned_user_id,phone_number_id,direction,state,from_number,to_number)
+      VALUES($1,$2,$3,$4,$5,$6,'OUTBOUND','QUEUED',$7,$8)`, [callId,request.tenantId,body.contact_id??null,body.campaign_id??null,body.assigned_user_id??null,body.phone_number_id,row.e164,to]);
+    return { ...row, callId };
+  });
+
+  try {
+    const telnyx = new TelnyxClient({ apiKey: decryptMfaSecret(details.api_key_encrypted, telephonyKey()), baseUrl: details.api_base_url, connectionId: details.connection_id });
+    const providerCall = await telnyx.createCall({ to, from: details.e164, connectionId: details.connection_id, webhookUrl: `${config.PUBLIC_API_ORIGIN}/api/v1/webhooks/telnyx/${request.tenantId}/${body.provider_id}`, ...(body.idempotency_key ? { commandId: body.idempotency_key } : {}), answeringMachineDetection: body.answering_machine_detection });
+    const response = ok(request.id, { id: details.callId, state: 'INITIATED', provider_call_id: providerCall.callControlId });
+    await withTransaction(request.tenantId!, async (tx) => {
+      await tx.query(`UPDATE calls SET state='INITIATED',provider_call_id=$2,started_at=COALESCE(started_at,NOW()) WHERE id=$1`, [details.callId, providerCall.callControlId]);
+      await tx.query(`INSERT INTO call_legs(id,tenant_id,call_id,provider,provider_call_id,leg_index,state,from_number,to_number,started_at)
+        VALUES($1,$2,$3,'telnyx',$4,0,'INITIATED',$5,$6,NOW())`, [randomUUIDv7(),request.tenantId,details.callId,providerCall.callControlId,details.e164,to]);
+      if (body.idempotency_key) await tx.query(`INSERT INTO idempotency_keys(id,tenant_id,idempotency_key,request_hash,response_status,response_body,expires_at)
+        VALUES($1,$2,$3,$4,201,$5,NOW()+INTERVAL '24 hours') ON CONFLICT DO NOTHING`, [randomUUIDv7(),request.tenantId,body.idempotency_key,sha256(JSON.stringify(body)),JSON.stringify(response)]);
+    });
+    return reply.code(201).send(response);
+  } catch (error) {
+    await withTransaction(request.tenantId!, (tx) => tx.query("UPDATE calls SET state='FAILED',ended_at=NOW(),disposition='PROVIDER_ERROR' WHERE id=$1", [details.callId]));
+    return reply.code(502).send(fail(request.id,502,'TELNYX_CALL_FAILED',error instanceof Error ? error.message : 'Telnyx call failed').body);
+  }
+});
+
+app.get('/api/v1/telephony/calls/:id', { preHandler: requirePermission('telephony.read') }, async (request, reply) => {
+  const params=z.object({id:z.string().uuid()}).parse(request.params);
+  const result=await withTransaction(request.tenantId!, tx=>tx.query('SELECT * FROM calls WHERE id=$1',[params.id]));
+  if(!result.rows[0]) return reply.code(404).send(fail(request.id,404,'CALL_NOT_FOUND','Call not found').body);
+  return ok(request.id,result.rows[0]);
+});
+
+app.post('/api/v1/webhooks/telnyx/:tenantId/:providerId', { config: { rawBody: true } }, async (request, reply) => {
+  const params=z.object({tenantId:z.string().uuid(),providerId:z.string().uuid()}).parse(request.params);
+  const signature=String(request.headers['telnyx-signature-ed25519'] ?? '');
+  const timestamp=String(request.headers['telnyx-timestamp'] ?? '');
+  const raw=request.rawBody ?? Buffer.from(JSON.stringify(request.body));
+  const providerResult=await withTransaction(params.tenantId, tx=>tx.query<{api_key_encrypted:string;api_base_url:string;webhook_public_key:string|null}>(
+    `SELECT api_key_encrypted,api_base_url,webhook_public_key FROM telephony_providers WHERE id=$1 AND status='ACTIVE'`,[params.providerId]));
+  const provider=providerResult.rows[0];
+  if(!provider) return reply.code(404).send({error:'Webhook target not found'});
+  const verifier=new TelnyxClient({apiKey:decryptMfaSecret(provider.api_key_encrypted,telephonyKey()),baseUrl:provider.api_base_url,...(provider.webhook_public_key ? { publicKey: provider.webhook_public_key } : {})});
+  if(!verifier.verifyWebhook(raw,signature,timestamp,config.TELNYX_WEBHOOK_MAX_AGE_SECONDS)) return reply.code(401).send({error:'Invalid webhook signature'});
+  const eventId=webhookEventId(request.body);
+  const eventType=webhookEventType(request.body) ?? 'unknown';
+  const payload=(request.body as {data?:{payload?:Record<string,unknown>;occurred_at?:string}})?.data?.payload ?? {};
+  const callControlId=typeof payload.call_control_id==='string' ? payload.call_control_id : undefined;
+  const occurredAt=typeof (request.body as {data?:{occurred_at?:unknown}})?.data?.occurred_at==='string' ? new Date((request.body as {data:{occurred_at:string}}).data.occurred_at) : new Date();
+  await withTransaction(params.tenantId, async (tx) => {
+    if(eventId){
+      const inserted=await tx.query(`INSERT INTO call_events(id,tenant_id,call_id,provider_event_id,event_type,payload,occurred_at)
+        SELECT $1,$2,id,$3,$4,$5,$6 FROM calls WHERE provider_call_id=$7
+        ON CONFLICT (tenant_id,provider_event_id) DO NOTHING RETURNING id`,[randomUUIDv7(),params.tenantId,eventId,eventType,JSON.stringify(request.body),occurredAt,callControlId??'']);
+      if(!inserted.rowCount) return;
+    }
+    if(!callControlId) return;
+    const eventState: Record<string,string>={'call.initiated':'INITIATED','call.answered':'ANSWERED','call.bridged':'BRIDGED','call.hangup':'ENDED'};
+    if(eventType==='call.recording.saved' && callControlId){
+      const current=await tx.query<{id:string}>('SELECT id FROM calls WHERE provider_call_id=$1',[callControlId]);
+      const call=current.rows[0];
+      const recordingId=typeof payload.recording_id==='string'?payload.recording_id:null;
+      if(call && recordingId) await tx.query(`INSERT INTO recordings(id,tenant_id,call_id,provider_recording_id,status) VALUES($1,$2,$3,$4,'AVAILABLE') ON CONFLICT DO NOTHING`,[randomUUIDv7(),params.tenantId,call.id,recordingId]);
+      return;
+    }
+    const next=eventState[eventType];
+    if(!next) return;
+    const current=await tx.query<{id:string;state:string}>('SELECT id,state FROM calls WHERE provider_call_id=$1',[callControlId]);
+    const call=current.rows[0]; if(!call) return;
+    try{assertTransition(call.state as Parameters<typeof assertTransition>[0],next as Parameters<typeof assertTransition>[1]);}
+    catch{return;}
+    const terminal=next==='ENDED';
+    await tx.query(`UPDATE calls SET state=$2,answered_at=CASE WHEN $2='ANSWERED' THEN COALESCE(answered_at,NOW()) ELSE answered_at END,ended_at=CASE WHEN $2='ENDED' THEN COALESCE(ended_at,NOW()) ELSE ended_at END,duration_seconds=CASE WHEN $2='ENDED' AND started_at IS NOT NULL THEN GREATEST(0,EXTRACT(EPOCH FROM (NOW()-started_at))::INTEGER) ELSE duration_seconds END WHERE id=$1`,[call.id,next]);
+    await tx.query(`UPDATE call_legs SET state=$2,answered_at=CASE WHEN $2='ANSWERED' THEN COALESCE(answered_at,NOW()) ELSE answered_at END,ended_at=CASE WHEN $2='ENDED' THEN COALESCE(ended_at,NOW()) ELSE ended_at END WHERE call_id=$1 AND provider_call_id=$3`,[call.id,next,callControlId]);
+    if(terminal) await tx.query(`UPDATE calls SET disposition=COALESCE(disposition,CASE WHEN $1='call.hangup' THEN 'COMPLETED' ELSE disposition END) WHERE id=$2`,[eventType,call.id]);
+  });
+  return reply.code(204).send();
+});
+
 app.setErrorHandler((error, request, reply) => {
   request.log.error({ err: error, request_id: request.id }, 'request failed');
   const status = error instanceof z.ZodError ? 422 : ((error as { statusCode?: number }).statusCode ?? 500);
   const code = error instanceof z.ZodError ? 'VALIDATION_ERROR' : 'INTERNAL_ERROR';
-  const message = error instanceof z.ZodError ? 'Request validation failed' : status >= 500 ? 'Internal server error' : error.message;
+  const message = error instanceof z.ZodError ? 'Request validation failed' : status >= 500 ? 'Internal server error' : error instanceof Error ? error.message : 'Request failed';
   return reply.code(status).send(fail(request.id, status, code, message, error instanceof z.ZodError ? error.issues : undefined).body);
 });
 
@@ -527,3 +716,5 @@ process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
 
 await app.listen({ host: '0.0.0.0', port: config.PORT });
+
+[executed on device: codespaces-73d925 (e215b2d9-1319-4805-9ed4-b434928d4042)]

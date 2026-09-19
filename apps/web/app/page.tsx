@@ -15,9 +15,8 @@ type ApiResponse = {
 async function api(path: string, body?: Record<string, unknown>) {
   const response = await fetch(`${API_BASE}${path}`, {
     method: body ? 'POST' : 'GET',
-    headers: body ? { 'Content-Type': 'application/json' } : undefined,
+    ...(body ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {}),
     credentials: 'include',
-    body: body ? JSON.stringify(body) : undefined,
   });
   const payload = (await response.json().catch(() => ({}))) as ApiResponse;
   if (!response.ok) {
@@ -211,3 +210,5 @@ export default function Home() {
     </main>
   );
 }
+
+[executed on device: codespaces-73d925 (e215b2d9-1319-4805-9ed4-b434928d4042)]
