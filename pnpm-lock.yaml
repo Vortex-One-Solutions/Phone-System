@@ -1,8 +1,13 @@
+[Reading 1000 lines from start (total: 2647 lines, 1647 remaining)]
+
 lockfileVersion: '9.0'
 
 settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
+
+overrides:
+  uuid: 11.1.1
 
 importers:
 
@@ -47,9 +52,15 @@ importers:
       '@platform/domain':
         specifier: workspace:*
         version: link:../../packages/domain
+      '@platform/email':
+        specifier: workspace:*
+        version: link:../../packages/email
       '@platform/events':
         specifier: workspace:*
         version: link:../../packages/events
+      '@platform/messaging':
+        specifier: workspace:*
+        version: link:../../packages/messaging
       '@platform/observability':
         specifier: workspace:*
         version: link:../../packages/observability
@@ -164,7 +175,14 @@ importers:
 
   packages/integrations: {}
 
-  packages/messaging: {}
+  packages/messaging:
+    devDependencies:
+      typescript:
+        specifier: ^5.9.2
+        version: 5.9.3
+      vitest:
+        specifier: ^5.0.1
+        version: 5.0.1(@types/node@26.6.2)(vite@7.3.6(@types/node@26.6.2)(tsx@4.23.13))
 
   packages/observability:
     dependencies:
@@ -184,9 +202,6 @@ importers:
 
   workers/billing:
     devDependencies:
-      '@types/node':
-        specifier: ^24.13.5
-        version: 24.13.5
       tsx:
         specifier: ^4.20.5
         version: 4.23.13
@@ -221,9 +236,6 @@ importers:
 
   workers/events:
     devDependencies:
-      '@types/node':
-        specifier: ^24.13.5
-        version: 24.13.5
       tsx:
         specifier: ^4.20.5
         version: 4.23.13
@@ -232,6 +244,16 @@ importers:
         version: 5.9.3
 
   workers/integration:
+    dependencies:
+      '@platform/database':
+        specifier: workspace:*
+        version: link:../../packages/database
+      '@platform/domain':
+        specifier: workspace:*
+        version: link:../../packages/domain
+      '@platform/email':
+        specifier: workspace:*
+        version: link:../../packages/email
     devDependencies:
       '@types/node':
         specifier: ^24.13.5
@@ -245,9 +267,6 @@ importers:
 
   workers/sequence:
     devDependencies:
-      '@types/node':
-        specifier: ^24.13.5
-        version: 24.13.5
       tsx:
         specifier: ^4.20.5
         version: 4.23.13
@@ -256,6 +275,16 @@ importers:
         version: 5.9.3
 
   workers/webhook:
+    dependencies:
+      '@platform/database':
+        specifier: workspace:*
+        version: link:../../packages/database
+      '@platform/domain':
+        specifier: workspace:*
+        version: link:../../packages/domain
+      '@platform/messaging':
+        specifier: workspace:*
+        version: link:../../packages/messaging
     devDependencies:
       '@types/node':
         specifier: ^24.13.5
@@ -971,32 +1000,4 @@ packages:
     resolution: {integrity: sha512-rwHwUfXL40Chm1r08yrhU3qpUvdVlgkKNeyeGPOxnW8/SyVDvgRaed/Uz54AqWNaTCAThlj6QAs3TZcKI0xDEw==}
     engines: {node: '>=0.10.0'}
 
-  cookie@1.1.1:
-    resolution: {integrity: sha512-ei8Aos7ja0weRpFzJnEA9UHJ/7XQmqglbRwnf2ATjcB9Wq874VKH9kfjjirM6UhU2/E5fFYadylyhFldcqSidQ==}
-    engines: {node: '>=18'}
 
-  cookie@2.0.1:
-    resolution: {integrity: sha512-yuToqVvRrj6pfDXREyQAAv8SkAEk/8GS3jQRTiUMm66TVtBYmqQeoEjL2Lmq8Rpo6271vH76InTChTitEAm65w==}
-    engines: {node: '>=22'}
-
-  cross-env@10.1.0:
-    resolution: {integrity: sha512-GsYosgnACZTADcmEyJctkJIoqAhHjttw7RsFrVoJNXbsWWqaq6Ym+7kZjq6mS45O0jij6vtiReppKQEtqWy6Dw==}
-    engines: {node: '>=20'}
-    hasBin: true
-
-  cross-spawn@7.0.6:
-    resolution: {integrity: sha512-uV2QOWP2nWzsy2aMp8aRibhi9dlzF5Hgh5SHaB9OiTGEyDTiJJyx0uy51QXdyWbtAHNua4XJzUKca3OzKUd3vA==}
-    engines: {node: '>= 8'}
-
-  csstype@3.2.3:
-    resolution: {integrity: sha512-z1HGKcYy2xA8AGQfwrn0PAy+PB7X/GSj3UVJW9qKyn43xWa+gl5nXmU4qqLMRzWVLFC8KusUX8T/0kCiOYpAIQ==}
-
-  debug@4.4.3:
-    resolution: {integrity: sha512-RGwwWnwQvkVfavKVt22FGLw+xYSdzARwm0ru6DhTVA3umU5hZc28V3kO4stgYryrTlLpuvgI9GiijltAjNbcqA==}
-    engines: {node: '>=6.0'}
-    peerDependencies:
-      supports-color: '*'
-    peerDependenciesMeta:
-      supports-color:
-
-[executed on device: codespaces-73d925 (e215b2d9-1319-4805-9ed4-b434928d4042)]
