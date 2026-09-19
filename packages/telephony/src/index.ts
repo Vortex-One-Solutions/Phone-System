@@ -115,6 +115,17 @@ export class TelnyxClient {
     return text.trim();
   }
 
+  async deleteRecording(recordingId: string): Promise<void> {
+    const response = await fetch(`${this.baseUrl}/recordings/${encodeURIComponent(recordingId)}`, {
+      method: 'DELETE',
+      headers: { accept: 'application/json', authorization: `Bearer ${this.config.apiKey}` },
+    });
+    if (!response.ok && response.status !== 404) {
+      const text = await response.text();
+      throw new Error(`Telnyx ${response.status}: ${text.slice(0, 1000)}`);
+    }
+  }
+
   verifyWebhook(rawBody: Buffer | string, signature: string, timestamp: string, maxAgeSeconds = 300): boolean {
     if (!this.config.publicKey || !signature || !timestamp) return false;
     const ts = Number(timestamp);
